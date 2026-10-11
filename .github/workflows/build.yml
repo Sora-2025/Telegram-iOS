@@ -126,13 +126,31 @@ jobs:
           # глобальный developer dir и падает на CommandLineTools.
           # Поэтому переключаем его по-настоящему, как это делает апстрим.
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
-          echo "xcode-select -p : $(xcode-select -p)"
+
+          # Bazel (в частности dav1d) жёстко ссылается на /Applications/Xcode.app.
+          # Чистка диска сносит его вместе с остальными невыбранными, поэтому
+          # восстанавливаем симлинк на выбранный Xcode. Иначе получаем
+          # "no such sysroot directory" и невозможность найти errno.h.
+          if [ "$XCODE_APP" != "/Applications/Xcode.app" ]; then
+            sudo rm -rf /Applications/Xcode.app
+            sudo ln -s "$XCODE_APP" /Applications/Xcode.app
+          fi
+
+          echo "XCODE_APP     : $XCODE_APP"
+          echo "Xcode.app     : $(ls -ld /Applications/Xcode.app | awk '{print $NF}')"
+          echo "xcode-select  : $(xcode-select -p)"
           xcodebuild -version
           if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
             echo "::error::SDK iphoneos недоступен для выбранного Xcode"
             exit 1
           fi
-          echo "SDK iphoneos: $(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "SDK iphoneos  : $(xcrun --sdk iphoneos --show-sdk-path)"
+          # Ровно тот путь, который Bazel подставит в -isysroot.
+          echo "SDK через symlink: $(/usr/bin/xcrun --sdk iphoneos --show-sdk-path)"
+          if [ ! -d /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs ]; then
+            echo "::error::SDK недоступен по пути /Applications/Xcode.app — Bazel его не найдёт"
+            exit 1
+          fi
 
       - name: Report disk headroom
         run: |

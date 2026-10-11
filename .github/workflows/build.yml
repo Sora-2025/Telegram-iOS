@@ -46,9 +46,12 @@ jobs:
         id: xcode
         run: |
           set -euo pipefail
+
+          # Ниже намеренно нет вложенных "$( ... )" с for/pipe внутри:
+          # такая конструкция ломала парсинг bash. Всё плоско, шаг за шагом.
           WANTED="${{ github.event.inputs.xcode_version }}"
           if [ -z "$WANTED" ]; then
-            WANTED="$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')'
+            WANTED="$(jq -r '.xcode' versions.json)"
           fi
 
           APP=""
@@ -57,15 +60,17 @@ jobs:
           fi
 
           if [ -z "$APP" ]; then
-            # Последний по номеру версии. /Applications/Xcode.app без суффикса
-            # тоже попадает в список, но sort -V считает его пустым — поэтому
-            # не по имени, а перебором с проверкой, что Xcode живой.
-            APP="$(for a in /Applications/Xcode*.app; do
-                     [ -d "$a" ] || continue
-                     if DEVELOPER_DIR="$a/Contents/Developer" xcodebuild -version >/dev/null 2>&1; then
-                       echo "$a"
-                     fi
-                   done | sort -V | tail -1)"
+            # sort -Vr — от самой свежей версии к самой старой. Берём первую,
+            # на которой xcodebuild реально отвечает.
+            CANDIDATES="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -Vr || true)"
+            for a in $CANDIDATES; do
+              if [ -d "$a" ]; then
+                if DEVELOPER_DIR="$a/Contents/Developer" xcodebuild -version >/dev/null 2>&1; then
+                  APP="$a"
+                  break
+                fi
+              fi
+            done
           fi
 
           if [ -z "$APP" ]; then
@@ -73,17 +78,16 @@ jobs:
             exit 1
           fi
 
-          if [ "$(basename "$APP")" != "Xcode_${WANTED}.app" ]; then
-            echo "::warning::Xcode ${WANTED} отсутствует, берём $(basename "$APP"). Если сборка упадёт на версии Xcode — прогони с runner=macos-26."
+          KEEP_NAME="$(basename "$APP")"
+          if [ "$KEEP_NAME" != "Xcode_${WANTED}.app" ]; then
+            echo "::warning::Xcode ${WANTED} отсутствует, берём ${KEEP_NAME}. Если сборка не пройдёт — прогони с runner=macos-26."
           fi
 
-          # Именно .app, а не производные от DEVELOPER_DIR: basename дважды
-          # dirname'нутого пути даёт "Contents", и чистка диска снесла бы все
-          # Xcode вместе с выбранным.
+          # Именно путь до .app: basename от производных DEVELOPER_DIR даёт
+          # "Contents", и чистка диска снесла бы все Xcode вместе с выбранным.
           echo "XCODE_APP=$APP" >> "$GITHUB_ENV"
           echo "DEVELOPER_DIR=$APP/Contents/Developer" >> "$GITHUB_ENV"
-          echo "selected=$(basename "$APP")" >> "$GITHUB_OUTPUT"
-          "$APP/Contents/Developer/usr/bin/xcodebuild" -version || true
+          echo "selected=$KEEP_NAME" >> "$GITHUB_OUTPUT"
 
       # Место — главная причина падений: сборочному дереву нужно 30+ ГБ,
       # а на бесплатных macOS-раннерах его ~14. Выкидываем всё, что не нужно,

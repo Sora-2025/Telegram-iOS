@@ -14,6 +14,8 @@ import LocalizedPeerData
 import TooltipUI
 import TelegramNotices
 
+import SGPrivacy
+
 private func galleryMediaForMedia(media: Media) -> Media? {
     if let media = media as? TelegramMediaImage {
         return media
@@ -513,9 +515,11 @@ public final class SecretMediaPreviewController: ViewController {
             if self.currentNodeMessageId != message.id {
                 self.currentNodeMessageId = message.id
                 var tempFilePath: String?
+                var tempFileName: String = "file"
                 var duration: Double = 0.0
                 for media in message.media {
                     if let file = media as? TelegramMediaFile {
+                        tempFileName = file.fileName ?? "file"
                         if let path = self.context.engine.resources.completedResourcePath(id: EngineMediaResource.Id(file.resource.id)) {
                             let tempFile = TempBox.shared.file(path: path, fileName: file.fileName ?? "file")
                             self.tempFile = tempFile
@@ -548,6 +552,13 @@ public final class SecretMediaPreviewController: ViewController {
                     self?.didSetReady = true
                 }
                 self._ready.set(ready |> map { true })
+                // Swiftgram: файл ещё лежит в TempBox — копируем в архив до
+                // того, как содержимое пометят потреблённым.
+                SGPrivacy.willOpenViewOnceMedia(
+                    message,
+                    fileURL: tempFilePath.map { URL(fileURLWithPath: $0) },
+                    fileName: tempFileName
+                )
                 self.markMessageAsConsumedDisposable.set(self.context.engine.messages.markMessageContentAsConsumedInteractively(messageId: message.id).start())
             } else {
                 var beginTimeAndTimeout: (Double, Double, Bool)?

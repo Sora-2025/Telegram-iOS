@@ -5,6 +5,8 @@ import TelegramApi
 import MtProtoKit
 import EncryptionProvider
 
+import SGPrivacy
+
 private func reactionGeneratedEvent(_ previousReactions: ReactionsMessageAttribute?, _ updatedReactions: ReactionsMessageAttribute?, message: Message, transaction: Transaction) -> (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)? {
     if let updatedReactions = updatedReactions, !message.flags.contains(.Incoming), message.id.peerId.namespace == Namespaces.Peer.CloudUser {
         let prev = previousReactions?.reactions ?? []
@@ -4440,6 +4442,20 @@ func replayFinalState(
                     }
                 }
             case let .DeleteMessagesWithGlobalIds(ids):
+                // Swiftgram: удаление по global id идёт мимо
+                // _internal_deleteMessages, поэтому архивируем здесь — тоже
+                // до transaction.deleteMessagesWithGlobalIds.
+                if SGPrivacy.captureDeleted, !ids.isEmpty {
+                    var globalCaptures: [SGPrivacy.SGDeletedMessageCapture] = []
+                    for id in transaction.messageIdsForGlobalIds(ids) {
+                        if let message = transaction.getMessage(id) {
+                            var messageResourceIds: [MediaResourceId] = []
+                            addMessageMediaResourceIdsToRemove(message: message, resourceIds: &messageResourceIds)
+                            globalCaptures.append(SGPrivacy.SGDeletedMessageCapture(message: message, resourceIds: messageResourceIds))
+                        }
+                    }
+                    SGPrivacy.willDeleteMessages(globalCaptures, mediaBox: mediaBox)
+                }
                 var resourceIds: [MediaResourceId] = []
                 transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)

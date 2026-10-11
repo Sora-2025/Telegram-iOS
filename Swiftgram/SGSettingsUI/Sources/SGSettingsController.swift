@@ -5,6 +5,7 @@ import SGStrings
 import SGAPIToken
 
 import SGItemListUI
+import SGPrivacyUI
 import Foundation
 import UIKit
 import Display
@@ -127,6 +128,7 @@ private enum SGSliderSetting: String {
 private enum SGDisclosureLink: String {
     case contentSettings
     case languageSettings
+    case privacy
 }
 
 private struct PeerNameColorScreenState: Equatable {
@@ -305,6 +307,7 @@ private func SGControllerEntries(presentationData: PresentationData, callListSet
     
     id.increment(10000)
     entries.append(.header(id: id.count, section: .other, text: strings.Appearance_Other.uppercased(), badge: nil))
+    entries.append(.disclosure(id: id.count, section: .other, link: .privacy, text: "Приватность"))
     entries.append(.toggle(id: id.count, section: .other, settingName: .swipeForVideoPIP, value: SGSimpleSettings.shared.videoPIPSwipeDirection == SGSimpleSettings.VideoPIPSwipeDirection.up.rawValue, text: i18n("Settings.swipeForVideoPIP", lang), enabled: true))
     entries.append(.notice(id: id.count, section: .other, text: i18n("Settings.swipeForVideoPIP.Notice", lang)))
     entries.append(.toggle(id: id.count, section: .other, settingName: .hideChannelBottomButton, value: !SGSimpleSettings.shared.hideChannelBottomButton, text: i18n("Settings.showChannelBottomButton", lang), enabled: true))
@@ -691,6 +694,8 @@ public func sgSettingsController(context: AccountContext/*, focusOnItemTag: Int?
                     }
                     strongContext.sharedContext.applicationBindings.openUrl(url)
                 })
+            case .privacy:
+                pushControllerImpl?(sgPrivacyController(context: context))
         }
     }, searchInput: { searchQuery in
         updateState { state in

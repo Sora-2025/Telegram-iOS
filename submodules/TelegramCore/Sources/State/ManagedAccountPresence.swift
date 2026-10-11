@@ -4,6 +4,8 @@ import Postbox
 import SwiftSignalKit
 import MtProtoKit
 
+import SGPrivacy
+
 private typealias SignalKitTimer = SwiftSignalKit.Timer
 
 
@@ -43,6 +45,12 @@ private final class AccountPresenceManagerImpl {
     }
     
     private func updatePresence(_ isOnline: Bool) {
+        // Swiftgram: режим призрака — не сообщаем серверу о своём онлайне.
+        // Локальное состояние аккаунта при этом не трогаем, чтобы приложение
+        // не считало пользователя офлайн внутри себя.
+        if SGPrivacy.suppressPresence {
+            return
+        }
         let request: Signal<Api.Bool, MTRpcError>
         if isOnline {
             let timer = SignalKitTimer(timeout: 30.0, repeat: false, completion: { [weak self] in

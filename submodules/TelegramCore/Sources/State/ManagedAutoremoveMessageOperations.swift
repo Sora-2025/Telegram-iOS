@@ -4,6 +4,8 @@ import SwiftSignalKit
 import TelegramApi
 import MtProtoKit
 
+import SGPrivacy
+
 private typealias SignalKitTimer = SwiftSignalKit.Timer
 
 private final class ManagedAutoremoveMessageOperationsHelper {
@@ -82,6 +84,13 @@ func managedAutoremoveMessageOperations(network: Network, postbox: Postbox, isRe
                     Logger.shared.log("Autoremove", "Performing autoremove for \(entry.messageId), isRemove: \(isRemove)")
 
                     if let message = transaction.getMessage(entry.messageId) {
+                        // Swiftgram: одноразовые сообщения не выжигаем по TTL.
+                        // Само удаление сообщения из истории оставляем — иначе
+                        // чат раздувается, — но содержимое перестаёт истекать.
+                        if SGPrivacy.keepViewOnce, message.isSelfExpiring {
+                            Logger.shared.log("Autoremove", "Keeping self-expiring content \(entry.messageId)")
+                            return
+                        }
                         if message.id.peerId.namespace == Namespaces.Peer.SecretChat || isRemove {
                             _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [entry.messageId])
                         } else {

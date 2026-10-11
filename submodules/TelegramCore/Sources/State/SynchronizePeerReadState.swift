@@ -3,6 +3,8 @@ import Postbox
 import TelegramApi
 import SwiftSignalKit
 
+import SGPrivacy
+
 
 private enum PeerReadStateMarker: Equatable {
     case Global(Int32)
@@ -227,6 +229,11 @@ private func validatePeerReadState(network: Network, postbox: Postbox, stateMana
 }
 
 private func pushPeerReadState(network: Network, postbox: Postbox, stateManager: AccountStateManager, peerId: PeerId, readState: PeerReadState) -> Signal<PeerReadState, PeerReadStateValidationError> {
+    // Swiftgram: режим призрака — прочтения остаются локальными. Галочки у
+    // собеседника не появятся, но у себя сообщение будет отмечено прочитанным.
+    if SGPrivacy.suppressReadReceipts {
+        return .single(readState)
+    }
     if peerId.namespace == Namespaces.Peer.SecretChat {
         return inputSecretChat(postbox: postbox, peerId: peerId)
         |> mapToSignal { inputPeer -> Signal<PeerReadState, PeerReadStateValidationError> in

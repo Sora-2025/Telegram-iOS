@@ -3,6 +3,8 @@ import Postbox
 import SwiftSignalKit
 import TelegramApi
 
+import SGPrivacy
+
 func addMessageMediaResourceIdsToRemove(media: Media, resourceIds: inout [MediaResourceId]) {
     if let image = media as? TelegramMediaImage {
         for representation in image.representations {
@@ -23,6 +25,25 @@ func addMessageMediaResourceIdsToRemove(message: Message, resourceIds: inout [Me
 }
 
 public func _internal_deleteMessages(transaction: Transaction, mediaBox: MediaBox, ids: [MessageId], deleteMedia: Bool = true, manualAddMessageThreadStatsDifference: ((MessageThreadKey, Int, Int) -> Void)? = nil) {
+    // Swiftgram: снимаем копию ПЕРВЫМ ДЕЛОМ, до removeCachedResources ниже и
+    // до transaction.deleteMessages — и то и другое уничтожает исходники.
+    // Сюда попадают все удаления: и локальные (свайп, контекстное меню), и те,
+    // что пришли с сервера.
+    if SGPrivacy.captureDeleted, !ids.isEmpty {
+        var captures: [SGPrivacy.SGDeletedMessageCapture] = []
+        captures.reserveCapacity(ids.count)
+        for id in ids {
+            if id.namespace != Namespaces.Message.Cloud {
+                continue
+            }
+            if let message = transaction.getMessage(id) {
+                var messageResourceIds: [MediaResourceId] = []
+                addMessageMediaResourceIdsToRemove(message: message, resourceIds: &messageResourceIds)
+                captures.append(SGPrivacy.SGDeletedMessageCapture(message: message, resourceIds: messageResourceIds))
+            }
+        }
+        SGPrivacy.willDeleteMessages(captures, mediaBox: mediaBox)
+    }
     var resourceIds: [MediaResourceId] = []
     if deleteMedia {
         for id in ids {

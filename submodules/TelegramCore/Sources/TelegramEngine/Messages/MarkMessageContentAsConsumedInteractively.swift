@@ -3,7 +3,15 @@ import Postbox
 import TelegramApi
 import SwiftSignalKit
 
+import SGPrivacy
+
 func _internal_markMessageContentAsConsumedInteractively(postbox: Postbox, messageId: MessageId) -> Signal<Void, NoError> {
+    // Swiftgram: при включённом keepViewOnce не отмечаем содержимое как
+    // потреблённое и не запускаем обратный отсчёт — иначе серверу уходит
+    // readMessageContents и копия, которую мы сохранили, остаётся единственной.
+    if SGPrivacy.keepViewOnce {
+        return .complete()
+    }
     return postbox.transaction { transaction -> Void in
         if let message = transaction.getMessage(messageId), message.flags.contains(.Incoming) {
             var updateMessage = false

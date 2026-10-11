@@ -22,6 +22,7 @@ swift_library(
         "//Swiftgram/SGStrings:SGStrings",
 #        "//Swiftgram/SGAPI:SGAPI",
         "//Swiftgram/SGAPIToken:SGAPIToken",
+        "//Swiftgram/SGPrivacyUI:SGPrivacyUI",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/Display:Display",
         "//submodules/Postbox:Postbox",

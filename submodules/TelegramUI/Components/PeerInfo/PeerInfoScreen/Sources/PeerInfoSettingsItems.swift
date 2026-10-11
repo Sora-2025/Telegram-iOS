@@ -13,6 +13,8 @@ import DeviceAccess
 import TelegramStringFormatting
 import PeerNameColorItem
 
+import SGPrivacy
+
 enum SettingsSection: Int, CaseIterable {
     case edit
     case phone
@@ -227,6 +229,16 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
         }))
     }
     items[.swiftgram]!.append(PeerInfoScreenDisclosureItem(id: 1, label: swiftgramLabel, text: "Swiftgram", icon: PresentationResourcesSettings.swiftgram, action: {
+        interaction.openSettings(.swiftgram)
+    }))
+
+    // Swiftgram: режим призрака прямо на главном экране настроек. Подробности
+    // (прочтения, «печатает…», архив) — в разделе «Приватность».
+    items[.swiftgram]!.append(PeerInfoScreenSwitchItem(id: 2, text: "Режим призрака", value: SGPrivacySettings.shared.ghostMode, icon: PresentationResourcesSettings.swiftgram, isLocked: false, toggled: { value in
+        SGPrivacySettings.shared.ghostMode = value
+        interaction.requestLayout(true)
+    }))
+    items[.swiftgram]!.append(PeerInfoScreenDisclosureItem(id: 3, label: .none, text: "Приватность", icon: PresentationResourcesSettings.swiftgram, action: {
         interaction.openSettings(.swiftgram)
     }))
 

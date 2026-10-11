@@ -1,109 +1,190 @@
 name: CI
 
 on:
-  # push:
-  #   branches: [ master ]
-
+  push:
+    branches: [ master ]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Образ macOS-раннера. Нужен с Xcode, близким к versions.json'
+        required: false
+        default: 'macos-15'
+        type: string
+      xcode_version:
+        description: 'Версия Xcode. Пусто = newest доступный на раннере'
+        required: false
+        default: ''
+        type: string
+      continue_on_error:
+        description: 'Показать ВСЕ ошибки компиляции за один прогон (bazel --keep_going)'
+        required: false
+        default: 'true'
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: macos-13
+    # macos-13 снят GitHub. macos-26 нужен под Xcode 26.x из versions.json;
+    # на macos-15 стоит Xcode 16.x, и сборка может не пройти — тогда ставь
+    # runner: macos-26 вручную при запуске.
+    runs-on: ${{ github.event.inputs.runner || 'macos-15' }}
+    timeout-minutes: 350
 
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          fetch-depth: '0'
+          # Полная история не нужна: build number берём из номера прогона,
+          # а fetch-depth: 0 на репо с 268 сабмодулями стоит минут двадцати.
+          fetch-depth: 1
 
-      - name: Set active Xcode path
+      - name: Select Xcode
+        id: xcode
         run: |
-          XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
-          sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
+          set -euo pipefail
+          WANTED="${{ github.event.inputs.xcode_version }}"
+          if [ -z "$WANTED" ]; then
+            WANTED="$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')"
+          fi
 
-      - name: Create canonical source directory
+          if [ -d "/Applications/Xcode_${WANTED}.app" ]; then
+            export DEVELOPER_DIR="/Applications/Xcode_${WANTED}.app/Contents/Developer"
+          else
+            NEWEST="$(ls -d /Applications/Xcode*.app 2>/dev/null | sed 's#.*/Xcode_##; s#\.app##' | sort -V | tail -1)"
+            if [ -z "$NEWEST" ]; then
+              echo "::error::На раннере нет ни одного Xcode"
+              exit 1
+            fi
+            export DEVELOPER_DIR="/Applications/Xcode_${NEWEST}.app/Contents/Developer"
+            echo "::warning::Xcode ${WANTED} отсутствует, берём ${NEWEST}. Если сборка упадёт на версии Xcode — прогони с macos-26."
+          fi
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          echo "selected=$(basename "$(dirname "$DEVELOPER_DIR")")" >> "$GITHUB_OUTPUT"
+
+      # Место — главная причина падений: сборочному дереву нужно 30+ ГБ,
+      # а на бесплатных macOS-раннерах его ~14. Выкидываем всё, что не нужно,
+      # ДО сборки. Выбранный Xcode не трогаем.
+      - name: Free disk space
         run: |
-          set -x
+          set -euo pipefail
+          KEEP="$(basename "$(dirname "$DEVELOPER_DIR")")"
+          df -h /
+
+          for app in /Applications/Xcode*.app; do
+            [ -e "$app" ] || continue
+            [ "$(basename "$app")" = "$KEEP" ] && continue
+            sudo rm -rf "$app"
+          done
+
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Devices
+          sudo rm -rf /usr/local/share/chocolatey
+          sudo rm -rf /Library/Developer/CoreSimulator/Caches
+          rm -rf ~/Library/Caches/*
+          rm -rf ~/Library/Developer/Xcode/DerivedData
+          rm -rf /Users/runner/Library/Developer/CoreSimulator
+
+          df -h /
+
+      - name: Report disk headroom
+        run: |
+          set -euo pipefail
+          # -P даёт POSIX-формат (одна строка заголовка), -K — килобайты.
+          # Блок . в df -g на macOS ломает awk по NR==2, поэтому так.
+          FREE_KB="$(df -Pk / | awk '$6 == "/" {print $4}')"
+          if [ -z "$FREE_KB" ]; then
+            echo "::warning::Не удалось определить свободное место"
+            exit 0
+          fi
+          FREE_GB=$((FREE_KB / 1024 / 1024))
+          echo "Свободно: ${FREE_GB} ГБ"
+          if [ "$FREE_GB" -lt 35 ]; then
+            echo "::warning::Свободно ${FREE_GB} ГБ, сборке нужно ~35. Скорее всего упадёт с 'No space left on device'. Нужен macOS large runner."
+          fi
+
+      # Пути исходников попадают в бинарь, поэтому сборка идёт из фиксированного
+      # каталога. mv, а не cp -R: исходник и /Users/Shared на одном томе, так
+      # что это rename — в отличие от исходного workflow, который копировал
+      # терабайт дважды и сам же съедал место.
+      - name: Move sources to canonical path
+        run: |
+          set -euo pipefail
           sudo mkdir -p /Users/Shared
-          cp -R $GITHUB_WORKSPACE /Users/Shared/
-          mv /Users/Shared/$(basename $GITHUB_WORKSPACE) /Users/Shared/telegram-ios
+          TARGET=/Users/Shared/telegram-ios
+          sudo rm -rf "$TARGET"
+          sudo mv "$GITHUB_WORKSPACE" "$TARGET"
+          echo "SOURCE_DIR=$TARGET" >> "$GITHUB_ENV"
+          ls "$TARGET" | head
 
-      - name: Build the App
+      - name: Import fake codesigning
+        working-directory: /Users/Shared/telegram-ios
+        run: python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+
+      - name: Build
+        working-directory: /Users/Shared/telegram-ios
+        env:
+          # Путь к исходникам зашивается в бинарь — он должен совпадать от прогона к прогону.
+          SOURCE_DIR: /Users/Shared/telegram-ios
+          BAZEL_USER_ROOT: /private/var/tmp/_bazel_containerhost
         run: |
-          set -x
+          set -euo pipefail
 
-          # source code paths are included in the final binary, so we need to make them stable across builds
-          SOURCE_DIR=/Users/Shared/telegram-ios
+          BUILD_NUMBER="$((${{ github.run_number }} + $(cat build_number_offset)))"
+          export APP_VERSION="$(python3 -c 'import json;print(json.load(open("versions.json"))["app"])')"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
 
-          # use canonical bazel root
-          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
+          CONTINUE=''
+          if [ '${{ github.event.inputs.continue_on_error }}' != 'false' ]; then
+            CONTINUE='--continueOnError'
+          fi
 
-          cd $SOURCE_DIR
-
-          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
-
-          export APP_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["app"]);')
-          export COMMIT_COUNT=$(git rev-list --count HEAD)
-          export COMMIT_COUNT="$(($COMMIT_COUNT+$BUILD_NUMBER_OFFSET))"
-          export BUILD_NUMBER="$COMMIT_COUNT"
-          echo "BUILD_NUMBER=$(echo $BUILD_NUMBER)" >> $GITHUB_ENV
-          echo "APP_VERSION=$(echo $APP_VERSION)" >> $GITHUB_ENV
-
-          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          # pipefail обязателен: иначе tee съест код возврата и упавший Bazel
+          # нарисуется зелёным.
+          set -o pipefail
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
+            --overrideXcodeVersion \
             build \
             --configurationPath="build-system/appstore-configuration.json" \
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=release_arm64 \
-            --buildNumber="$BUILD_NUMBER"
+            --buildNumber="$BUILD_NUMBER" \
+            $CONTINUE 2>&1 | tee build.log
 
-          # collect ipa
-          OUTPUT_PATH="build/artifacts"
-          rm -rf "$OUTPUT_PATH"
-          mkdir -p "$OUTPUT_PATH"
-          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
-            cp "$f" $OUTPUT_PATH/
-          done
-
-          # collect dsym
-          mkdir -p build/DSYMs
-          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/*.dSYM; do
-            cp -R "$f" build/DSYMs/
-          done
-          zip -r "./$OUTPUT_PATH/Telegram.DSYMs.zip" build/DSYMs 1>/dev/null
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Лог нужен всегда, в том числе при успехе: следующий шаг правок —
+      # чинить компиляцию по нему.
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: build-${{ env.BUILD_NUMBER }}
-          release_name: Telegram ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
-          body: |
-            An unsigned build of Telegram for iOS ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
-          draft: false
-          prerelease: false
+          name: build-log
+          path: /Users/Shared/telegram-ios/build.log
+          retention-days: 14
+          if-no-files-found: ignore
 
-      - name: Upload Release IPA
-        id: upload-release-ipa 
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
-          asset_name: Telegram.ipa
-          asset_content_type: application/zip
+      - name: Collect IPA
+        working-directory: /Users/Shared/telegram-ios
+        run: |
+          set -euo pipefail
+          mkdir -p build/artifacts
+          # bazel-out — симлинк, поэтому find без -L молча вернёт пустоту.
+          FOUND="$(find -L bazel-out -maxdepth 12 -path '*/bin/Telegram/Telegram.ipa' -type f | head -1)"
+          if [ -z "$FOUND" ]; then
+            echo "::error::IPA не найден — сборка отвалилась раньше упаковки"
+            exit 1
+          fi
+          cp "$FOUND" build/artifacts/Telegram.ipa
+          ls -lh build/artifacts/Telegram.ipa
 
-      - name: Upload Release DSYM
-        id: upload-release-dsym 
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /Users/Shared/telegram-ios/build/artifacts/Telegram.DSYMs.zip
-          asset_name: Telegram.DSYMs.zip
-          asset_content_type: application/zip
+          name: Telegram-${{ github.run_number }}.ipa
+          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          retention-days: 30
+          if-no-files-found: error

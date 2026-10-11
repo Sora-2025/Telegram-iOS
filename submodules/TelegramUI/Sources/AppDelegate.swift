@@ -985,7 +985,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 icons.append(PresentationAppIcon(name: "PremiumBlack", imageName: "PremiumBlack", isPremium: true))
                 
                 
-                // MARK: Swiftgram
+// MARK: Swiftgram
                 icons = [
                     PresentationAppIcon(name: "SGDefault", imageName: "SGDefault", isDefault: true),
                     PresentationAppIcon(name: "SGBlack", imageName: "SGBlack"),
@@ -998,12 +998,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     PresentationAppIcon(isSGPro: true, name: "SGPro", imageName: "SGPro"),
                     PresentationAppIcon(isSGPro: true, name: "SGDay", imageName: "SGDay"),
                     PresentationAppIcon(isSGPro: true, name: "SGGold", imageName: "SGGold"),
-                    SGSimpleSettings.shared.duckyAppIconAvailable ? PresentationAppIcon(isSGPro: true, name: "SGDucky", imageName: "SGDucky") : PresentationAppIcon(name: "", imageName: ""), // Empty
                     PresentationAppIcon(name: "SGNeon", imageName: "SGNeon"),
                     PresentationAppIcon(name: "SGNeonBlue", imageName: "SGNeonBlue"),
                     PresentationAppIcon(name: "SGGlass", imageName: "SGGlass"),
                     PresentationAppIcon(name: "SGSparkling", imageName: "SGSparkling"),
                 ]
+                if SGSimpleSettings.shared.duckyAppIconAvailable {
+                    icons.append(PresentationAppIcon(isSGPro: true, name: "SGDucky", imageName: "SGDucky"))
+                }
 
                 if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" {
                     icons.append(PresentationAppIcon(name: "SGBeta", imageName: "SGBeta"))

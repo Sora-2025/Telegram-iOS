@@ -524,10 +524,13 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
     
     let currentAppIcon: PresentationAppIcon?
     var appIcons = context.sharedContext.applicationBindings.getAvailableAlternateIcons()
-    if let alternateIconName = context.sharedContext.applicationBindings.getAlternateIconName() {
-        currentAppIcon = appIcons.filter { $0.name == alternateIconName }.first
+    if let alternateIconName = context.sharedContext.applicationBindings.getAlternateIconName(), let match = appIcons.filter({ $0.name == alternateIconName }).first {
+        currentAppIcon = match
     } else {
-        currentAppIcon = appIcons.filter { $0.isDefault }.first
+        // Иконка могла остаться от прошлой сборки и отсутствовать в списке —
+        // тогда показываем ту, что объявлена дефолтной, а не «Blue», которой
+        // в наборе Swiftgram вообще нет.
+        currentAppIcon = appIcons.filter({ $0.isDefault }).first ?? appIcons.first
     }
     
     let premiumConfiguration = PremiumConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
@@ -537,7 +540,7 @@ public func themeSettingsController(context: AccountContext, focusOnItemTag: The
     
     let availableAppIcons: Signal<[PresentationAppIcon], NoError> = .single(appIcons)
     let currentAppIconName = ValuePromise<String?>()
-    currentAppIconName.set(currentAppIcon?.name ?? "Blue")
+    currentAppIconName.set(currentAppIcon?.name)
     
     let cloudThemes = Promise<[TelegramTheme]>()
     let updatedCloudThemes = context.engine.themes.themes(accountManager: context.sharedContext.accountManager)

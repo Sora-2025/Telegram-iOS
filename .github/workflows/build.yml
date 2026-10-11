@@ -181,6 +181,24 @@ jobs:
             --buildNumber="$BUILD_NUMBER" \
             $CONTINUE 2>&1 | tee build.log
 
+      # Лог недоступен через API без токена, поэтому при падении дублируем его
+      # в аннотации — их GitHub отдаёт открыто, и чинить компиляцию можно,
+      # не открывая браузер.
+      - name: Report build failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          if [ ! -f build.log ]; then
+            echo "::error::build.log не найден — падение произошло до пайпа с tee"
+            exit 0
+          fi
+          LINES="$(wc -l < build.log | tr -d ' ')"
+          echo "::error::Сборка упала. build.log: ${LINES} строк. Ниже начало и конец."
+          echo "===== НАЧАЛО ====="
+          head -n 30 build.log | sed 's/^/::warning::/'
+          echo "===== КОНЕЦ ====="
+          tail -n 30 build.log | sed 's/^/::warning::/'
+
       # Лог нужен всегда, в том числе при успехе: следующий шаг правок —
       # чинить компиляцию по нему.
       - name: Upload build log

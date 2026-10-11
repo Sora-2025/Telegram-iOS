@@ -175,7 +175,7 @@ jobs:
             --bazelUserRoot="$BAZEL_USER_ROOT" \
             --overrideXcodeVersion \
             build \
-            --configurationPath="build-system/appstore-configuration.json" \
+            --configurationPath="build-system/fork-configuration.json" \
             --codesigningInformationPath=build-system/fake-codesigning \
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER" \

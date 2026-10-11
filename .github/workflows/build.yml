@@ -48,22 +48,42 @@ jobs:
           set -euo pipefail
           WANTED="${{ github.event.inputs.xcode_version }}"
           if [ -z "$WANTED" ]; then
-            WANTED="$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')"
+            WANTED="$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')'
           fi
 
+          APP=""
           if [ -d "/Applications/Xcode_${WANTED}.app" ]; then
-            export DEVELOPER_DIR="/Applications/Xcode_${WANTED}.app/Contents/Developer"
-          else
-            NEWEST="$(ls -d /Applications/Xcode*.app 2>/dev/null | sed 's#.*/Xcode_##; s#\.app##' | sort -V | tail -1)"
-            if [ -z "$NEWEST" ]; then
-              echo "::error::На раннере нет ни одного Xcode"
-              exit 1
-            fi
-            export DEVELOPER_DIR="/Applications/Xcode_${NEWEST}.app/Contents/Developer"
-            echo "::warning::Xcode ${WANTED} отсутствует, берём ${NEWEST}. Если сборка упадёт на версии Xcode — прогони с macos-26."
+            APP="/Applications/Xcode_${WANTED}.app"
           fi
-          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
-          echo "selected=$(basename "$(dirname "$DEVELOPER_DIR")")" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$APP" ]; then
+            # Последний по номеру версии. /Applications/Xcode.app без суффикса
+            # тоже попадает в список, но sort -V считает его пустым — поэтому
+            # не по имени, а перебором с проверкой, что Xcode живой.
+            APP="$(for a in /Applications/Xcode*.app; do
+                     [ -d "$a" ] || continue
+                     if DEVELOPER_DIR="$a/Contents/Developer" xcodebuild -version >/dev/null 2>&1; then
+                       echo "$a"
+                     fi
+                   done | sort -V | tail -1)"
+          fi
+
+          if [ -z "$APP" ]; then
+            echo "::error::На раннере нет ни одного рабочего Xcode"
+            exit 1
+          fi
+
+          if [ "$(basename "$APP")" != "Xcode_${WANTED}.app" ]; then
+            echo "::warning::Xcode ${WANTED} отсутствует, берём $(basename "$APP"). Если сборка упадёт на версии Xcode — прогони с runner=macos-26."
+          fi
+
+          # Именно .app, а не производные от DEVELOPER_DIR: basename дважды
+          # dirname'нутого пути даёт "Contents", и чистка диска снесла бы все
+          # Xcode вместе с выбранным.
+          echo "XCODE_APP=$APP" >> "$GITHUB_ENV"
+          echo "DEVELOPER_DIR=$APP/Contents/Developer" >> "$GITHUB_ENV"
+          echo "selected=$(basename "$APP")" >> "$GITHUB_OUTPUT"
+          "$APP/Contents/Developer/usr/bin/xcodebuild" -version || true
 
       # Место — главная причина падений: сборочному дереву нужно 30+ ГБ,
       # а на бесплатных macOS-раннерах его ~14. Выкидываем всё, что не нужно,
@@ -71,7 +91,7 @@ jobs:
       - name: Free disk space
         run: |
           set -euo pipefail
-          KEEP="$(basename "$(dirname "$DEVELOPER_DIR")")"
+          KEEP="$(basename "$XCODE_APP")"
           df -h /
 
           for app in /Applications/Xcode*.app; do
@@ -90,6 +110,16 @@ jobs:
 
           df -h /
 
+      - name: Verify Xcode survived cleanup
+        run: |
+          set -euo pipefail
+          if [ ! -d "$XCODE_APP" ]; then
+            echo "::error::Выбранный Xcode $XCODE_APP удалён чисткой диска"
+            exit 1
+          fi
+          xcode-select -p
+          xcodebuild -version
+
       - name: Report disk headroom
         run: |
           set -euo pipefail
@@ -106,29 +136,20 @@ jobs:
             echo "::warning::Свободно ${FREE_GB} ГБ, сборке нужно ~35. Скорее всего упадёт с 'No space left on device'. Нужен macOS large runner."
           fi
 
-      # Пути исходников попадают в бинарь, поэтому сборка идёт из фиксированного
-      # каталога. mv, а не cp -R: исходник и /Users/Shared на одном томе, так
-      # что это rename — в отличие от исходного workflow, который копировал
-      # терабайт дважды и сам же съедал место.
-      - name: Move sources to canonical path
+      # Раньше воркспейс переносился в /Users/Shared/telegram-ios, но это ломало
+      # все node-шаги (actions/* запускаются из GITHUB_WORKSPACE и падают с
+      # "No such file or directory"), а ещё съедало место на копирование.
+      # Путь /Users/runner/work/<repo>/<repo> и так стабилен между прогонами.
+      - name: Record source directory
         run: |
           set -euo pipefail
-          sudo mkdir -p /Users/Shared
-          TARGET=/Users/Shared/telegram-ios
-          sudo rm -rf "$TARGET"
-          sudo mv "$GITHUB_WORKSPACE" "$TARGET"
-          echo "SOURCE_DIR=$TARGET" >> "$GITHUB_ENV"
-          ls "$TARGET" | head
+          echo "SOURCE_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
 
       - name: Import fake codesigning
-        working-directory: /Users/Shared/telegram-ios
         run: python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
 
       - name: Build
-        working-directory: /Users/Shared/telegram-ios
         env:
-          # Путь к исходникам зашивается в бинарь — он должен совпадать от прогона к прогону.
-          SOURCE_DIR: /Users/Shared/telegram-ios
           BAZEL_USER_ROOT: /private/var/tmp/_bazel_containerhost
         run: |
           set -euo pipefail
@@ -163,12 +184,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: /Users/Shared/telegram-ios/build.log
+          path: build.log
           retention-days: 14
           if-no-files-found: ignore
 
       - name: Collect IPA
-        working-directory: /Users/Shared/telegram-ios
         run: |
           set -euo pipefail
           mkdir -p build/artifacts
@@ -185,6 +205,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Telegram-${{ github.run_number }}.ipa
-          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          path: build/artifacts/Telegram.ipa
           retention-days: 30
           if-no-files-found: error

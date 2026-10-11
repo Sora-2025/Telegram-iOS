@@ -121,8 +121,18 @@ jobs:
             echo "::error::Выбранный Xcode $XCODE_APP удалён чисткой диска"
             exit 1
           fi
-          xcode-select -p
+          # Одного DEVELOPER_DIR мало: Bazel фильтрует окружение перед
+          # запуском действий, и до xcrun переменная не доходит — тот берёт
+          # глобальный developer dir и падает на CommandLineTools.
+          # Поэтому переключаем его по-настоящему, как это делает апстрим.
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          echo "xcode-select -p : $(xcode-select -p)"
           xcodebuild -version
+          if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
+            echo "::error::SDK iphoneos недоступен для выбранного Xcode"
+            exit 1
+          fi
+          echo "SDK iphoneos: $(xcrun --sdk iphoneos --show-sdk-path)"
 
       - name: Report disk headroom
         run: |

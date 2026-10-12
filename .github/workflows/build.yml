@@ -244,12 +244,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/artifacts
-          # bazel-out — симлинк, поэтому find без -L молча вернёт пустоту.
-          FOUND="$(find -L bazel-out -maxdepth 12 -path '*/bin/Telegram/Telegram.ipa' -type f | head -1)"
+          # Bazel-цель Telegram/Swiftgram кладёт Swiftgram.ipa, а не Telegram.ipa,
+          # поэтому ищем по расширению. bazel-bin и bazel-out — симлинки,
+          # без -L find молча вернёт пустоту.
+          FOUND="$(find -L bazel-bin bazel-out -maxdepth 3 -name '*.ipa' -type f 2>/dev/null | head -1)"
           if [ -z "$FOUND" ]; then
-            echo "::error::IPA не найден — сборка отвалилась раньше упаковки"
+            echo "::error::IPA не найден. Что вообще есть:"
+            find -L bazel-bin bazel-out -maxdepth 3 -type f \( -name '*.ipa' -o -name '*.zip' \) 2>/dev/null | head -20
+            echo "::error::Содержимое bazel-bin/Telegram:"
+            ls bazel-bin/Telegram 2>/dev/null | head -30
             exit 1
           fi
+          echo "найдено: $FOUND"
           cp "$FOUND" build/artifacts/Telegram.ipa
           ls -lh build/artifacts/Telegram.ipa
 

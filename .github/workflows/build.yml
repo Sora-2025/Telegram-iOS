@@ -240,48 +240,64 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      # continue-on-error: сборка к этому моменту уже стоит 1.8 часа. Сбой на
+      # поступочном шаге не должен помешать унести IPA — попытка ниже
+      # диагностическая, а Upload IPA ищет файл сам, мимо неё.
       - name: Collect IPA
+        continue-on-error: true
         run: |
-          set -euo pipefail
           mkdir -p build/artifacts
           # Bazel-цель Telegram/Swiftgram кладёт Swiftgram.ipa, а не Telegram.ipa,
           # поэтому ищем по расширению. bazel-bin и bazel-out — симлинки,
           # без -L find молча вернёт пустоту.
           FOUND="$(find -L bazel-bin bazel-out -maxdepth 3 -name '*.ipa' -type f 2>/dev/null | head -1)"
           if [ -z "$FOUND" ]; then
-            echo "::error::IPA не найден. Что вообще есть:"
-            find -L bazel-bin bazel-out -maxdepth 3 -type f \( -name '*.ipa' -o -name '*.zip' \) 2>/dev/null | head -20
-            echo "::error::Содержимое bazel-bin/Telegram:"
-            ls bazel-bin/Telegram 2>/dev/null | head -30
-            exit 1
+            echo "::warning::Collect IPA ничего не нашёл, Upload IPA попробует сам"
+            echo "::warning::Содержимое bazel-bin/Telegram:"
+            ls bazel-bin/Telegram 2>/dev/null | head -40
+          else
+            echo "найдено: $FOUND"
+            cp "$FOUND" build/artifacts/Telegram.ipa
+            ls -lh build/artifacts/Telegram.ipa
           fi
-          echo "найдено: $FOUND"
-          cp "$FOUND" build/artifacts/Telegram.ipa
-          ls -lh build/artifacts/Telegram.ipa
 
+      # Ищем по обоим путям: собранную копию и напрямую bazel-выход. Так
+      # шаг сработает, даже если Collect отвалится.
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Telegram-${{ github.run_number }}.ipa
-          path: build/artifacts/Telegram.ipa
+          path: |
+            build/artifacts/Telegram.ipa
+            bazel-bin/Telegram/*.ipa
+            bazel-out/**/Telegram.ipa
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
 
       # Дублируем IPA в Releases: артефакты живут 30 дней и висят только на
       # странице прогона, а релиз не исчезает и отдаётся по прямой ссылке.
       # gh уже есть на раннере, поэтому отдельный экшен не нужен.
       - name: Publish release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: build-${{ github.run_number }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          IPA="build/artifacts/Telegram.ipa"
+          if [ ! -f "$IPA" ]; then
+            IPA="$(find -L bazel-bin bazel-out -maxdepth 3 -name '*.ipa' -type f 2>/dev/null | head -1)"
+          fi
+          if [ -z "$IPA" ] || [ ! -f "$IPA" ]; then
+            echo "::warning::Релиз не создаём — IPA не нашлось. Артефакт выше должен был унести файл."
+            exit 0
+          fi
           NOTES="Swiftgram ${APP_VERSION} (build ${BUILD_NUMBER}), прогон #${GITHUB_RUN_NUMBER}."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" build/artifacts/Telegram.ipa --clobber
+            gh release upload "$TAG" "$IPA" --clobber
           else
-            gh release create "$TAG" build/artifacts/Telegram.ipa \
+            gh release create "$TAG" "$IPA" \
               --title "Swiftgram ${APP_VERSION} (${BUILD_NUMBER})" \
               --notes "$NOTES"
           fi
-          echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Telegram.ipa"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$IPA")"

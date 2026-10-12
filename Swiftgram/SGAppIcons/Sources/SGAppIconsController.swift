@@ -7,7 +7,7 @@ import TelegramCore
 import TelegramPresentationData
 import ItemListUI
 import PresentationDataUtils
-import OverlayStatusController
+import UndoUI
 
 private enum SGAppIconEntry: ItemListNodeEntry {
     case header(id: Int, text: String)
@@ -41,7 +41,8 @@ private enum SGAppIconEntry: ItemListNodeEntry {
         case let .icon(_, icon, selected, locked):
             let arguments = arguments as! SGAppIconArguments
             let suffix = selected ? "  ✓" : (locked ? "  🔒" : "")
-return ItemListDisclosureItem(
+            let title = icon.title + suffix
+            return ItemListDisclosureItem(
                 presentationData: presentationData,
                 systemStyle: .glass,
                 title: title,
@@ -87,24 +88,29 @@ public func sgAppIconsController(context: AccountContext) -> ViewController {
             return
         }
         SGAppIconManager.apply(icon) { error in
-            if let error = error {
-                let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                presentControllerImpl?(
-                    UndoOverlayController(
-                        presentationData: presentationData,
-                        content: .info(title: nil, text: error.localizedDescription, timeout: nil, customUndoText: nil),
-                        elevatedLayout: false,
-                        action: { _ in false }
-                    ),
-                    nil
-                )
-            } else {
+            guard let error = error else {
                 promise.set(icon)
+                return
             }
+            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+            presentControllerImpl?(
+                UndoOverlayController(
+                    presentationData: presentationData,
+                    content: .info(title: nil, text: error.localizedDescription, timeout: nil, customUndoText: nil),
+                    elevatedLayout: false,
+                    action: { _ in false }
+                ),
+                nil
+            )
         }
     })
 
-    let signal = combineLatest(context.sharedContext.presentationData, promise.get())
+    // Тип сигнала задан явно: без аннотации вывод ItemGenerationArguments
+    // из map |> ItemListController не сходится.
+    let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = combineLatest(
+        context.sharedContext.presentationData,
+        promise.get()
+    )
     |> map { presentationData, selected -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let controllerState = ItemListControllerState(
             presentationData: ItemListPresentationData(presentationData),

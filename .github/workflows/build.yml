@@ -32,6 +32,8 @@ jobs:
     # runner: macos-26 вручную при запуске.
     runs-on: ${{ github.event.inputs.runner || 'macos-15' }}
     timeout-minutes: 350
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -258,3 +260,22 @@ jobs:
           path: build/artifacts/Telegram.ipa
           retention-days: 30
           if-no-files-found: error
+
+      # Дублируем IPA в Releases: артефакты живут 30 дней и висят только на
+      # странице прогона, а релиз не исчезает и отдаётся по прямой ссылке.
+      # gh уже есть на раннере, поэтому отдельный экшен не нужен.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          NOTES="Swiftgram ${APP_VERSION} (build ${BUILD_NUMBER}), прогон #${GITHUB_RUN_NUMBER}."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/artifacts/Telegram.ipa --clobber
+          else
+            gh release create "$TAG" build/artifacts/Telegram.ipa \
+              --title "Swiftgram ${APP_VERSION} (${BUILD_NUMBER})" \
+              --notes "$NOTES"
+          fi
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Telegram.ipa"

@@ -204,7 +204,7 @@ public func sgPrivacyController(context: AccountContext) -> ViewController {
 
     let arguments = SGPrivacyArguments(
         setBool: { key, value in
-            SGPrivacySettings.shared.set(key, value)
+            SGPrivacySettings.shared.set(value, for: key)
             reloadPromise.set(true)
         },
         openLink: { link in
@@ -224,7 +224,12 @@ public func sgPrivacyController(context: AccountContext) -> ViewController {
         }
     )
 
-    let signal = combineLatest(context.sharedContext.presentationData, reloadSignal)
+    // Тип сигнала задан явно: без аннотации ItemGenerationArguments из
+    // map |> ItemListController не выводится.
+    let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = combineLatest(
+        context.sharedContext.presentationData,
+        reloadSignal
+    )
     |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let controllerState = ItemListControllerState(
             presentationData: ItemListPresentationData(presentationData),

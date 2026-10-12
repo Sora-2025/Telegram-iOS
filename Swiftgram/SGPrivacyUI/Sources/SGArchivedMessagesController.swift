@@ -180,13 +180,12 @@ public func sgArchivedMessageController(context: AccountContext, entry: SGArchiv
         initialScrollToItem: nil
     )
 
-    return ItemListController(
-        context: context,
-        state: ValuePromise(true, ignoreRepeated: true).get()
+    let detailSignal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = ValuePromise(true, ignoreRepeated: true).get()
         |> map { _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
             return (controllerState, (listState, Void()))
         }
-    )
+
+    return ItemListController(context: context, state: detailSignal)
 }
 
 /// Экран архива: удалённые или одноразовые сообщения.
@@ -218,7 +217,10 @@ public func sgArchivedMessagesController(context: AccountContext, kind: SGArchiv
 
     let title = kind == .deleted ? "Удалённые сообщения" : "Одноразовые сообщения"
 
-    let signal = combineLatest(context.sharedContext.presentationData, reloadSignal)
+    let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = combineLatest(
+        context.sharedContext.presentationData,
+        reloadSignal
+    )
     |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
         let controllerState = ItemListControllerState(
             presentationData: ItemListPresentationData(presentationData),

@@ -182,6 +182,33 @@ jobs:
       - name: Import fake codesigning
         run: python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
 
+      # Идёт после ImportCertificates.py намеренно: тот оставляет ключ в
+      # temp.keychain, а GenerateProfiles.py переставляет список keychain'ов и
+      # удаляет свой. В обратном порядке подпись искалась бы в удалённом.
+      - name: Rewrite fake provisioning profiles for custom bundle id
+        run: |
+          set -euo pipefail
+
+          SRC="$GITHUB_WORKSPACE/build-system/fake-codesigning"
+          DST="$RUNNER_TEMP/fake-codesigning"
+
+          UPSTREAM_ID="$(jq -r '.bundle_id' build-system/appstore-configuration.json)"
+          BUNDLE_ID="$(jq -r '.bundle_id' build-system/fork-configuration.json)"
+          echo "bundle_id: $UPSTREAM_ID -> $BUNDLE_ID"
+
+          mkdir -p "$DST/profiles"
+          cp -R "$SRC/certs" "$DST/certs"
+
+          cd build-system/Make
+          python3 -u GenerateProfiles.py \
+            --source "$SRC/profiles" \
+            --destination "$DST/profiles" \
+            --certs "$SRC/certs" \
+            --replace "${UPSTREAM_ID}=${BUNDLE_ID}"
+
+          ls -l "$DST/profiles"
+          echo "CODESIGNING_PATH=$DST" >> "$GITHUB_ENV"
+
       - name: Build
         env:
           BAZEL_USER_ROOT: /private/var/tmp/_bazel_containerhost
@@ -206,7 +233,7 @@ jobs:
             --overrideXcodeVersion \
             build \
             --configurationPath="build-system/fork-configuration.json" \
-            --codesigningInformationPath=build-system/fake-codesigning \
+            --codesigningInformationPath="$CODESIGNING_PATH" \
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER" \
             $CONTINUE 2>&1 | tee build.log

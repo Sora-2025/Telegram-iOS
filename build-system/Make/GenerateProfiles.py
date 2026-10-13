@@ -97,26 +97,44 @@ def get_certificate_base64_from_p12(p12_path, p12_password=''):
     return base64.b64encode(cert_der).decode('utf-8')
 
 
-def process_provisioning_profile(source, destination, certificate_data, signing_identity, keychain_name):
-    parsed_plist = run_executable_with_output('security', arguments=['cms', '-D', '-i', source], check_result=True)
+def apply_replacements(parsed_plist_file, source, replacements):
+    with open(parsed_plist_file, 'rb') as file:
+        content = file.read()
+    for old, new in replacements:
+        if old.encode('utf-8') not in content:
+            print('Warning: {!r} not found in {}'.format(old, os.path.basename(source)))
+        content = content.replace(old.encode('utf-8'), new.encode('utf-8'))
+    with open(parsed_plist_file, 'wb') as file:
+        file.write(content)
+
+
+def replace_developer_certificates(parsed_plist_file, certificate_data):
+    with open(parsed_plist_file, 'rb') as file:
+        plist = plistlib.loads(file.read())
+    plist['DeveloperCertificates'] = [base64.b64decode(certificate_data)]
+    plist.pop('DER-Encoded-Profile', None)
+    with open(parsed_plist_file, 'wb') as file:
+        plistlib.dump(plist, file, fmt=plistlib.FMT_XML)
+
+
+def process_provisioning_profile(source, destination, certificate_data, signing_identity, keychain_name, replacements=None):
+    parsed_plist = run_executable_with_output('openssl', arguments=[
+        'smime',
+        '-inform',
+        'der',
+        '-verify',
+        '-noverify',
+        '-in',
+        source
+    ], decode=False, stderr_to_stdout=False, check_result=True)
     parsed_plist_file = tempfile.mktemp()
-    with open(parsed_plist_file, 'w+') as file:
+    with open(parsed_plist_file, 'wb') as file:
         file.write(parsed_plist)
 
-    # Remove all existing developer certificates
-    while True:
-        result = run_executable_with_output('plutil', arguments=['-remove', 'DeveloperCertificates.0', parsed_plist_file], check_result=False)
-        if result is None or 'Could not' in str(result) or result == '':
-            # Check if the removal actually failed by trying to extract
-            check = run_executable_with_output('plutil', arguments=['-extract', 'DeveloperCertificates.0', 'raw', parsed_plist_file], check_result=False)
-            if check is None or 'Could not' in str(check):
-                break
+    if replacements:
+        apply_replacements(parsed_plist_file, source, replacements)
 
-    # Insert the new certificate
-    run_executable_with_output('plutil', arguments=['-insert', 'DeveloperCertificates.0', '-data', certificate_data, parsed_plist_file])
-
-    # Remove the DER-Encoded-Profile (signature)
-    run_executable_with_output('plutil', arguments=['-remove', 'DER-Encoded-Profile', parsed_plist_file])
+    replace_developer_certificates(parsed_plist_file, certificate_data)
 
     # Sign with the certificate from the temporary keychain
     run_executable_with_output('security', arguments=[
@@ -126,7 +144,7 @@ def process_provisioning_profile(source, destination, certificate_data, signing_
     os.unlink(parsed_plist_file)
 
 
-def generate_provisioning_profiles(source_path, destination_path, certs_path):
+def generate_provisioning_profiles(source_path, destination_path, certs_path, replacements=None):
     p12_path = os.path.join(certs_path, 'SelfSigned.p12')
 
     if not os.path.exists(p12_path):
@@ -160,10 +178,40 @@ def generate_provisioning_profiles(source_path, destination_path, certs_path):
                     destination=os.path.join(destination_path, file_name),
                     certificate_data=certificate_data,
                     signing_identity=signing_identity,
-                    keychain_name=keychain_name
+                    keychain_name=keychain_name,
+                    replacements=replacements
                 )
         print('Done. Generated {} profiles.'.format(
             len([f for f in os.listdir(destination_path) if f.endswith('.mobileprovision')])
         ))
     finally:
         cleanup_temp_keychain(keychain_name)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Re-sign provisioning profiles with the fake self-signed certificate, optionally rewriting bundle identifiers.')
+    parser.add_argument('--source', required=True, help='Directory holding the source .mobileprovision files')
+    parser.add_argument('--destination', required=True, help='Directory to write the re-signed profiles into')
+    parser.add_argument('--certs', required=True, help='Directory holding SelfSigned.p12')
+    parser.add_argument('--replace', action='append', default=[], metavar='OLD=NEW', help='Literal replacement applied to every profile before re-signing; repeatable')
+    args = parser.parse_args()
+
+    replacements = []
+    for item in args.replace:
+        if '=' not in item:
+            print('--replace expects OLD=NEW, got {!r}'.format(item))
+            sys.exit(1)
+        old, new = item.split('=', 1)
+        replacements.append((old, new))
+
+    os.makedirs(args.destination, exist_ok=True)
+    generate_provisioning_profiles(
+        source_path=args.source,
+        destination_path=args.destination,
+        certs_path=args.certs,
+        replacements=replacements
+    )
+
+
+if __name__ == '__main__':
+    main()

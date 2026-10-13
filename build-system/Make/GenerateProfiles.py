@@ -7,6 +7,8 @@ import plistlib
 import argparse
 import subprocess
 import base64
+import hashlib
+import re
 
 from BuildEnvironment import run_executable_with_output, check_run_system
 
@@ -55,46 +57,52 @@ def cleanup_temp_keychain(keychain_name):
     run_executable_with_output('security', arguments=['delete-keychain', keychain_name], check_result=False)
 
 
-def get_signing_identity_from_p12(p12_path, p12_password=''):
-    """Extract the common name (signing identity) from the p12 certificate."""
+def get_certificate_from_keychain(keychain_name):
+    """Первая сертификация в keychain как (base64 DER, SHA-1).
+
+    Раньше сертификат и имя для `security cms -N` вытаскивались из p12 и из
+    subject. Оба шага хрупкие: `-passin pass:` завязан на пустой пароль, а
+    subject печатается как `CN=Имя` и разбирать его приходилось строкой.
+    Keychain, который мы только что наполнили, — источник истины: сертификат
+    оттуда гарантированно тот, которым потом подписывается профиль.
+    """
     proc = subprocess.Popen(
-        ['openssl', 'pkcs12', '-in', p12_path, '-passin', 'pass:' + p12_password, '-nokeys', '-legacy'],
+        ['security', 'find-certificate', '-a', '-p', keychain_name],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     cert_pem, _ = proc.communicate()
 
-    proc2 = subprocess.Popen(
-        ['openssl', 'x509', '-noout', '-subject', '-nameopt', 'oneline,-esc_msb'],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    subject, _ = proc2.communicate(cert_pem)
-    subject = subject.decode('utf-8').strip()
-
-    # Parse CN from subject line like: subject= C = AE, O = ..., CN = Some Name
-    if 'CN = ' in subject:
-        cn = subject.split('CN = ')[-1].split(',')[0].strip()
-        return cn
-
-    return None
-
-
-def get_certificate_base64_from_p12(p12_path, p12_password=''):
-    """Extract the certificate as base64 from p12 file."""
-    # Extract certificate in PEM format
     proc = subprocess.Popen(
-        ['openssl', 'pkcs12', '-in', p12_path, '-passin', 'pass:' + p12_password, '-nokeys', '-legacy'],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    cert_pem, _ = proc.communicate()
-
-    # Convert to DER format
-    proc2 = subprocess.Popen(
         ['openssl', 'x509', '-outform', 'DER'],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
-    cert_der, _ = proc2.communicate(cert_pem)
+    cert_der, stderr = proc.communicate(cert_pem)
 
-    return base64.b64encode(cert_der).decode('utf-8')
+    if not cert_der:
+        raise Exception('Could not read a certificate from keychain {}: {}'.format(
+            keychain_name, stderr.decode('utf-8', 'replace').strip()))
+
+    return base64.b64encode(cert_der).decode('utf-8'), hashlib.sha1(cert_der).hexdigest().upper()
+
+
+def find_identity_in_keychain(keychain_name):
+    """SHA-1 сертификата, которым security сможет подписать.
+
+    `security cms -N` принимает и общее имя, и SHA-1. Имя мы не разбираем:
+    берём то, что сам security называет идентичностью для codesigning. Если
+    фильтр по политике отсекает самоподписанный сертификат, откатываемся на
+    SHA-1 того же сертификата — подойдёт любой из двух.
+    """
+    result = run_executable_with_output('security', arguments=[
+        'find-identity', '-v', '-p', 'codesigning', keychain_name
+    ], check_result=False)
+
+    if result is not None:
+        match = re.search(r'\)\s+([0-9A-Fa-f]{40})\s', result)
+        if match:
+            return match.group(1).upper()
+
+    return None
 
 
 def apply_replacements(parsed_plist_file, source, replacements):
@@ -155,21 +163,18 @@ def generate_provisioning_profiles(source_path, destination_path, certs_path, re
         print('{} does not exist'.format(destination_path))
         sys.exit(1)
 
-    # Extract certificate info from p12
     p12_password = ''  # fake-codesigning uses empty password
-    certificate_data = get_certificate_base64_from_p12(p12_path, p12_password)
-    signing_identity = get_signing_identity_from_p12(p12_path, p12_password)
 
-    if not signing_identity:
-        print('Could not extract signing identity from {}'.format(p12_path))
-        sys.exit(1)
-
-    print('Using signing identity: {}'.format(signing_identity))
-
-    # Setup temporary keychain with the certificate
+    # Keychain поднимаем первым: сертификат и идентичность берём уже из него,
+    # так что обе величины заведомо соответствуют ключу, которым подписывается.
     keychain_name = setup_temp_keychain(p12_path, p12_password)
 
     try:
+        certificate_data, certificate_sha1 = get_certificate_from_keychain(keychain_name)
+        signing_identity = find_identity_in_keychain(keychain_name) or certificate_sha1
+
+        print('Using signing identity: {}'.format(signing_identity))
+
         for file_name in os.listdir(source_path):
             if file_name.endswith('.mobileprovision'):
                 print('Processing {}'.format(file_name))

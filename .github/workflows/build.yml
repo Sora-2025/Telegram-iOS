@@ -250,11 +250,25 @@ jobs:
             exit 0
           fi
           LINES="$(wc -l < build.log | tr -d ' ')"
-          echo "::error::Сборка упала. build.log: ${LINES} строк. Ниже начало и конец."
-          echo "===== НАЧАЛО ====="
-          head -n 30 build.log | sed 's/^/::warning::/'
-          echo "===== КОНЕЦ ====="
-          tail -n 30 build.log | sed 's/^/::warning::/'
+          echo "::error::Сборка упала. build.log: ${LINES} строк."
+
+          # GitHub отдаёт наружу первые ~10 аннотаций, и начало лога съедало
+          # всю квоту: в run #12 реальная ошибка компиляции так и не попала в
+          # вывод. Поэтому в аннотации идёт только суть.
+          echo "=== ошибки компиляции ==="
+          grep -aE '(^|[^A-Za-z_])(fatal )?error:' build.log \
+            | tail -5 \
+            | cut -c1-1000 \
+            | sed 's/^/::error::/' || true
+
+          echo "=== не собранные цели ==="
+          grep -aE '^FAILED:|did NOT complete|Unable to find an identity' build.log \
+            | tail -5 \
+            | cut -c1-1000 \
+            | sed 's/^/::error::/' || true
+
+          echo "=== хвост лога ==="
+          tail -n 25 build.log
 
       # Лог нужен всегда, в том числе при успехе: следующий шаг правок —
       # чинить компиляцию по нему.

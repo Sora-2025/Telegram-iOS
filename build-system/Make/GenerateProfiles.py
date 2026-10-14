@@ -6,7 +6,6 @@ import tempfile
 import plistlib
 import argparse
 import subprocess
-import base64
 import hashlib
 import re
 
@@ -58,13 +57,12 @@ def cleanup_temp_keychain(keychain_name):
 
 
 def get_certificate_from_keychain(keychain_name):
-    """Первая сертификация в keychain как (base64 DER, SHA-1).
+    """SHA-1 сертификата из keychain, которым мы собираемся подписать.
 
-    Раньше сертификат и имя для `security cms -N` вытаскивались из p12 и из
-    subject. Оба шага хрупкие: `-passin pass:` завязан на пустой пароль, а
-    subject печатается как `CN=Имя` и разбирать его приходилось строкой.
-    Keychain, который мы только что наполнили, — источник истины: сертификат
-    оттуда гарантированно тот, которым потом подписывается профиль.
+    Имя для `security cms -N` мы больше не разбираем: общие имена у нас
+    приходилось вытаскивать из subject строкой, и это ломалось. Берём SHA-1
+    сертификата из того же keychain, которым подписываем, — так подпись и
+    сертификат в профиле заведомо относятся к одному ключу.
     """
     proc = subprocess.Popen(
         ['security', 'find-certificate', '-a', '-p', keychain_name],
@@ -82,7 +80,7 @@ def get_certificate_from_keychain(keychain_name):
         raise Exception('Could not read a certificate from keychain {}: {}'.format(
             keychain_name, stderr.decode('utf-8', 'replace').strip()))
 
-    return base64.b64encode(cert_der).decode('utf-8'), hashlib.sha1(cert_der).hexdigest().upper()
+    return hashlib.sha1(cert_der).hexdigest().upper()
 
 
 def find_identity_in_keychain(keychain_name):
@@ -116,17 +114,9 @@ def apply_replacements(parsed_plist_file, source, replacements):
         file.write(content)
 
 
-def replace_developer_certificates(parsed_plist_file, certificate_data):
-    with open(parsed_plist_file, 'rb') as file:
-        plist = plistlib.loads(file.read())
-    plist['DeveloperCertificates'] = [base64.b64decode(certificate_data)]
-    plist.pop('DER-Encoded-Profile', None)
-    with open(parsed_plist_file, 'wb') as file:
-        plistlib.dump(plist, file, fmt=plistlib.FMT_XML)
-
-
-def process_provisioning_profile(source, destination, certificate_data, signing_identity, keychain_name, replacements=None):
-    parsed_plist = run_executable_with_output('openssl', arguments=[
+def read_source_profile(source):
+    """Распаковывает .mobileprovision в байты plist."""
+    data = run_executable_with_output('openssl', arguments=[
         'smime',
         '-inform',
         'der',
@@ -135,6 +125,31 @@ def process_provisioning_profile(source, destination, certificate_data, signing_
         '-in',
         source
     ], decode=False, stderr_to_stdout=False, check_result=True)
+
+    if not plistlib.loads(data).get('DeveloperCertificates'):
+        raise Exception('{} carries no DeveloperCertificates'.format(source))
+
+    return data
+
+
+def strip_embedded_signature(parsed_plist_file):
+    """Убирает DER-Encoded-Profile, не трогая DeveloperCertificates.
+
+    Собственно сертификат в профиле менять нельзя: именно он должен совпасть
+    с идентичностью, которой подписано приложение, иначе Xcode пишет "Unable
+    to find an identity on the system matching the ones in ...". В исходных
+    профилях уже лежит нужный фейковый сертификат, поэтому мы его сохраняем и
+    переписываем только entitlements.
+    """
+    with open(parsed_plist_file, 'rb') as file:
+        plist = plistlib.loads(file.read())
+    plist.pop('DER-Encoded-Profile', None)
+    with open(parsed_plist_file, 'wb') as file:
+        plistlib.dump(plist, file, fmt=plistlib.FMT_XML)
+
+
+def process_provisioning_profile(source, destination, signing_identity, keychain_name, replacements=None):
+    parsed_plist = read_source_profile(source)
     parsed_plist_file = tempfile.mktemp()
     with open(parsed_plist_file, 'wb') as file:
         file.write(parsed_plist)
@@ -142,7 +157,7 @@ def process_provisioning_profile(source, destination, certificate_data, signing_
     if replacements:
         apply_replacements(parsed_plist_file, source, replacements)
 
-    replace_developer_certificates(parsed_plist_file, certificate_data)
+    strip_embedded_signature(parsed_plist_file)
 
     # Sign with the certificate from the temporary keychain
     run_executable_with_output('security', arguments=[
@@ -170,8 +185,10 @@ def generate_provisioning_profiles(source_path, destination_path, certs_path, re
     keychain_name = setup_temp_keychain(p12_path, p12_password)
 
     try:
-        certificate_data, certificate_sha1 = get_certificate_from_keychain(keychain_name)
-        signing_identity = find_identity_in_keychain(keychain_name) or certificate_sha1
+        signing_identity = find_identity_in_keychain(keychain_name)
+        if not signing_identity:
+            signing_identity = get_certificate_from_keychain(keychain_name)
+            print('Policy filter matched no identity, signing with the certificate SHA-1')
 
         print('Using signing identity: {}'.format(signing_identity))
 
@@ -181,7 +198,6 @@ def generate_provisioning_profiles(source_path, destination_path, certs_path, re
                 process_provisioning_profile(
                     source=os.path.join(source_path, file_name),
                     destination=os.path.join(destination_path, file_name),
-                    certificate_data=certificate_data,
                     signing_identity=signing_identity,
                     keychain_name=keychain_name,
                     replacements=replacements
